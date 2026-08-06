@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="status.xsl"?>
+<prometheus usercount="7">
+	<game name="Gran Turismo" usercount="2" game_ids="UCUS98632,UCES01245">
+		<group name="race01" usercount="2">
+			<user mac_address="5c:fd:ef:a0:da:ab">Arun</user>
+			<user mac_address="d4:e6:bf:f0:99:99">Aayush1</user>
+		</group>
+	</game>
+	<game name="Tekken 6" usercount="5" game_ids="ULUS10466,ULES01376,NPJH50184,ULJS00224">
+		<group name="BTLLOBBY" usercount="5">
+			<user mac_address="ec:91:ef:42:0b:51">lakshay</user>
+			<user mac_address="94:6a:de:d1:f1:b1">Cprogrammer</user>
+			<user mac_address="14:1b:0c:75:ca:a3">PPSSPP</user>
+			<user mac_address="60:a6:36:eb:ed:5f">noobs</user>
+			<user mac_address="aa:bb:cc:dd:ee:ff">Alpha Adhoc manager</user>
+		</group>
+	</game>
+</prometheus>
