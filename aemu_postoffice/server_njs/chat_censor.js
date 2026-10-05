@@ -1,36 +1,23 @@
 "use strict";
 
 /**
- * Censors ASCII text in a complete application payload without changing
- * the payload length. Regex patterns are used so obfuscated spellings such
- * as "f u c k" and "fcuk" can be matched.
+ * Censors regex matches inside an application payload without changing
+ * payload length. Chat packets can contain binary framing around the text,
+ * so the whole-payload 75% text heuristic is intentionally not used here.
  *
  * config.chat_censor.patterns contains JavaScript regex source strings.
  */
-function isTextLike(payload) {
-    if (!Buffer.isBuffer(payload) || payload.length < 4) {
-        return false;
-    }
-
-    let textBytes = 0;
-    for (const byte of payload) {
-        if ((byte >= 0x20 && byte <= 0x7e) ||
-            byte === 0x09 || byte === 0x0a || byte === 0x0d) {
-            textBytes++;
-        }
-    }
-
-    return (textBytes / payload.length) >= 0.75;
-}
-
 function censorPayload(payload, censor) {
-    if (!isTextLike(payload) ||
+    if (!Buffer.isBuffer(payload) ||
         !censor ||
         censor.enabled !== true ||
         !Array.isArray(censor.patterns)) {
         return payload;
     }
 
+    // latin1 gives a 1:1 byte-to-character mapping. That lets us search
+    // ASCII chat text embedded in a binary PDP/PTP payload while preserving
+    // the exact packet length.
     let data = payload.toString("latin1");
     let changed = false;
     const replacement = (typeof censor.replacement === "string" &&
@@ -53,8 +40,11 @@ function censorPayload(payload, censor) {
         }
 
         data = data.replace(expression, (match) => {
+            // Avoid touching empty matches from patterns such as ($|).
+            if (match.length === 0) {
+                return match;
+            }
             changed = true;
-            // Keep the exact byte length so fixed-size/binary framing is safe.
             return replacement.repeat(match.length);
         });
     }
