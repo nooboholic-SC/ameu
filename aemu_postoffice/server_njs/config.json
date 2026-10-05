@@ -1,12 +1,24 @@
 {
-	"connection_strict_mode":false,
-	"forwarding_strict_mode":false,
-	"max_per_second_data_rate_byte":0,
-	"max_tx_op_rate":0,
-	"accounting_interval_ms":0,
-	"max_write_buffer_byte":2097152,
-	"max_connections":1500,
-	"num_worker_threads":2,
-	"tick_rate_hz":500,
-	"max_ips":0
+    "connection_strict_mode": false,
+    "forwarding_strict_mode": false,
+    "max_per_second_data_rate_byte": 0,
+    "max_tx_op_rate": 0,
+    "accounting_interval_ms": 0,
+    "max_write_buffer_byte": 2097152,
+    "max_connections": 1500,
+    "num_worker_threads": 2,
+    "tick_rate_hz": 500,
+    "max_ips": 0,
+    "chat_censor": {
+        "enabled": false,
+        "mode": "mask",
+        "replacement": "*",
+        "words": [
+            "fuck",
+            "shit",
+            "bitch",
+            "asshole",
+            "bastard"
+        ]
+    }
 }
