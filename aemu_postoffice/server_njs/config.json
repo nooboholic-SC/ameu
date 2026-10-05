@@ -13,12 +13,12 @@
         "enabled": false,
         "mode": "mask",
         "replacement": "*",
-        "words": [
-            "fuck",
-            "shit",
-            "bitch",
-            "asshole",
-            "bastard"
+        "patterns": [
+            "\\bf[^a-z0-9]*[uc][^a-z0-9]*[cu][^a-z0-9]*k\\b",
+            "\\bs[^a-z0-9]*h[^a-z0-9]*i[^a-z0-9]*t\\b",
+            "\\bb[^a-z0-9]*i[^a-z0-9]*t[^a-z0-9]*c[^a-z0-9]*h\\b",
+            "\\ba[^a-z0-9]*s[^a-z0-9]*s[^a-z0-9]*h[^a-z0-9]*o[^a-z0-9]*l[^a-z0-9]*e\\b",
+            "\\bb[^a-z0-9]*a[^a-z0-9]*s[^a-z0-9]*t[^a-z0-9]*a[^a-z0-9]*r[^a-z0-9]*d\\b"
         ]
     }
 }
