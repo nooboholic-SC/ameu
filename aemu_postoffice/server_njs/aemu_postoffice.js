@@ -38,6 +38,7 @@ const http = __importStar(require("node:http"));
 const fs = __importStar(require("node:fs"));
 const worker_threads = __importStar(require("node:worker_threads"));
 const os = __importStar(require("node:os"));
+const chat_censor_1 = require("./chat_censor");
 const port = 27313;
 const status_port = 27314;
 const memory_usage_log_interval_ms = 1000 * 60 * 2;
@@ -118,6 +119,12 @@ let config = {
     num_worker_threads: 1,
     tick_rate_hz: 90,
     max_ips: 0,
+    chat_censor: {
+        enabled: false,
+        mode: "mask",
+        replacement: "*",
+        words: ["fuck", "shit", "bitch", "asshole", "bastard"],
+    },
 };
 function log(...args) {
     console.log(new Date().toISOString(), ...args);
@@ -347,8 +354,7 @@ function close_one_session(ctx) {
             delete sessions_of_this_mac[ctx.session_name];
         }
         if (Object.keys(sessions_of_this_mac).length == 0) {
-            delete sessions_by_mac[ctx.src_addr_str];
-        }
+            delete sessions_by_mac[ctx.src_addr_str];        }
     }
     let sessions_of_this_ip = sessions_by_ip[ctx.ip];
     if (sessions_of_this_ip != undefined) {
@@ -558,6 +564,14 @@ function pdp_tick(ctx) {
                 if (ctx.pdp_data.length >= ctx.pdp_data_size) {
                     let cur_data = ctx.pdp_data.subarray(0, ctx.pdp_data_size);
                     ctx.pdp_data = ctx.pdp_data.subarray(ctx.pdp_data_size);
+
+                    const censored_data = chat_censor_1.censorPayload(cur_data, config.chat_censor);
+                    if (censored_data === null) {
+                        ctx.pdp_state = PdpState.PDP_STATE_HEADER;
+                        continue;
+                    }
+                    cur_data = censored_data;
+
                     let packet = Buffer.allocUnsafe(14 + ctx.pdp_data_size);
                     ctx.src_addr.copy(packet);
                     packet.writeUInt16LE(ctx.sport, 8);
@@ -610,6 +624,14 @@ function ptp_tick(ctx) {
                 if (ctx.ptp_data.length >= ctx.ptp_data_size) {
                     let cur_data = ctx.ptp_data.subarray(0, ctx.ptp_data_size);
                     ctx.ptp_data = ctx.ptp_data.subarray(ctx.ptp_data_size);
+
+                    const censored_data = chat_censor_1.censorPayload(cur_data, config.chat_censor);
+                    if (censored_data === null) {
+                        ctx.ptp_state = PtpState.PTP_STATE_HEADER;
+                        continue;
+                    }
+                    cur_data = censored_data;
+
                     let packet = Buffer.allocUnsafe(4 + ctx.ptp_data_size);
                     packet.writeUInt32LE(ctx.ptp_data_size);
                     cur_data.copy(packet, 4);
@@ -697,8 +719,7 @@ function send_data_to_sessions(send_list) {
         }
         let to_session = sessions_of_to_mac[send.to_session_name];
         if (to_session == undefined) {
-            continue;
-        }
+            continue;        }
         to_session.socket.write(Buffer.concat(send.data));
         const max_buffer_size = config.max_write_buffer_byte;
         if (max_buffer_size != 0 && to_session.socket.writableLength >= max_buffer_size) {
@@ -1098,344 +1119,3 @@ function on_connection(socket) {
         dst_addr_str: "",
         state: SessionMode.SESSION_MODE_INIT,
         session_name: "",
-        pdp_data: Buffer.allocUnsafe(0),
-        ptp_data: Buffer.allocUnsafe(0),
-        peer_session_name: "",
-        pdp_state: PdpState.PDP_STATE_HEADER,
-        ptp_state: PtpState.PTP_STATE_WAITING,
-        sock_addr_str: get_sock_addr_str(socket),
-        socket: socket,
-        worker: undefined,
-        chunks: [],
-        peer_session: undefined,
-        init_data: Buffer.allocUnsafe(0),
-        outstanding_data: Buffer.allocUnsafe(0),
-        outstanding_data_created: false,
-        ip: socket.remoteAddress == undefined ? "" : socket.remoteAddress,
-        ptp_wait_timeout: 0,
-        init_timeout: 0,
-        ptp_connect_retries: 0,
-    };
-    socket.on("error", (err) => {
-        switch (ctx.state) {
-            case SessionMode.SESSION_MODE_INIT:
-                log(`${ctx.sock_addr_str} errored during init, ${err}`);
-                ctx.socket.destroy();
-                break;
-            case SessionMode.SESSION_MODE_PDP:
-            case SessionMode.SESSION_MODE_PTP_LISTEN:
-                log(`${ctx.session_name} ${ctx.sock_addr_str} errored, ${err}`);
-                close_session(ctx);
-                break;
-            case SessionMode.SESSION_MODE_PTP_CONNECT:
-            case SessionMode.SESSION_MODE_PTP_ACCEPT:
-                log(`${ctx.session_name} ${ctx.sock_addr_str} errored, ${err}`);
-                close_session(ctx);
-                break;
-            default:
-                log(`bad state ${ctx.state} on socket error, debug this`);
-                process.exit(1);
-        }
-    });
-    socket.on("end", () => {
-        switch (ctx.state) {
-            case SessionMode.SESSION_MODE_INIT:
-                log(`${ctx.sock_addr_str} closed during init`);
-                ctx.socket.destroy();
-                break;
-            case SessionMode.SESSION_MODE_PDP:
-            case SessionMode.SESSION_MODE_PTP_LISTEN:
-                log(`${ctx.session_name} ${ctx.sock_addr_str} closed by client`);
-                close_session(ctx);
-                break;
-            case SessionMode.SESSION_MODE_PTP_CONNECT:
-            case SessionMode.SESSION_MODE_PTP_ACCEPT:
-                log(`${ctx.session_name} ${ctx.sock_addr_str} closed by client`);
-                setTimeout(() => { close_session(ctx); }, (1000 / config.tick_rate_hz) * 10);
-                break;
-            default:
-                log(`bad state ${ctx.state} on socket end, debug this`);
-                process.exit(1);
-        }
-    });
-    socket.on("data", (new_data) => {
-        switch (ctx.state) {
-            case SessionMode.SESSION_MODE_INIT: {
-                if (!ctx.outstanding_data_created) {
-                    ctx.init_data = Buffer.concat([ctx.init_data, new_data]);
-                    if (ctx.init_data.length >= 24) {
-                        ctx.outstanding_data = ctx.init_data.subarray(24);
-                        ctx.outstanding_data_created = true;
-                        ctx.init_data = ctx.init_data.subarray(0, 24);
-                        create_session(ctx);
-                    }
-                }
-                else {
-                    ctx.outstanding_data = Buffer.concat([ctx.outstanding_data, new_data]);
-                }
-                break;
-            }
-            case SessionMode.SESSION_MODE_PDP: {
-                ctx.chunks.push(new_data);
-                break;
-            }
-            case SessionMode.SESSION_MODE_PTP_LISTEN: {
-                // we just discard incoming data for ptp_listen
-                break;
-            }
-            case SessionMode.SESSION_MODE_PTP_CONNECT:
-            case SessionMode.SESSION_MODE_PTP_ACCEPT: {
-                ctx.chunks.push(new_data);
-                break;
-            }
-            default: {
-                log(`bad state ${ctx.state} on socket data handler, debug this`);
-                process.exit(1);
-            }
-        }
-    });
-    ctx.init_timeout = setTimeout(() => {
-        if (ctx.state == SessionMode.SESSION_MODE_INIT) {
-            log(`removing stale connection ${ctx.sock_addr_str}`);
-            ctx.socket.destroy();
-        }
-    }, 20000);
-}
-if (worker_threads.isMainThread) {
-    let server = net.createServer();
-    server.maxConnections = config.max_connections;
-    server.on("error", (err) => {
-        throw err;
-    });
-    server.on("drop", (drop) => {
-        log(`connection dropped as we have reached ${server.maxConnections} connections:`);
-        log(drop);
-    });
-    for (let i = 0; i < config.num_worker_threads; i++) {
-        let worker = {
-            id: i,
-            num_sessions: 0,
-            worker: new worker_threads.Worker(__filename),
-        };
-        worker.worker.on("message", handle_worker_message);
-        worker.worker.once("error", (e) => {
-            log(`worker error `, e, ` debug this`);
-            process.exit(1);
-        });
-        workers.push(worker);
-    }
-    process.on('SIGHUP', () => {
-        if (os.platform() == 'win32') {
-            process.exit(0);
-        }
-        log(`reloading config on SIGHUP`);
-        load_config();
-        for (const worker of workers) {
-            worker.worker.postMessage({
-                type: ParentToWorkerMessageType.PARENT_MESSAGE_UPDATE_CONFIG,
-                config: config,
-            });
-        }
-    });
-    server.on("connection", on_connection);
-    run_per_tick(send_chunks_to_workers);
-    log(`begin listening on port ${port}`);
-    server.listen({
-        port: port,
-        backlog: 1000
-    });
-}
-else {
-    if (worker_threads.parentPort != undefined) {
-        worker_threads.parentPort.on("message", handle_parent_message);
-    }
-    run_per_tick(send_data_to_parent);
-}
-function send_adhocctl_data_to_workers() {
-    const message = {
-        type: ParentToWorkerMessageType.PARENT_MESSAGE_SYNC_ADHOCCTL_DATA,
-        adhocctl_groups_by_mac: adhocctl_groups_by_mac,
-    };
-    for (let worker of workers) {
-        worker.worker.postMessage(message);
-    }
-}
-function game_list_sync(request, response) {
-    let ctx = { buf: Buffer.allocUnsafe(0) };
-    request.on("data", (chunk) => {
-        ctx.buf = Buffer.concat([ctx.buf, chunk]);
-    });
-    request.on("end", () => {
-        const decoded_string = ctx.buf.toString("utf8");
-        let parsed_data = {};
-        try {
-            parsed_data = JSON.parse(decoded_string);
-        }
-        catch (e) {
-            log(`failed parsing game list update from ${request.socket.remoteAddress}`);
-            response.writeHead(400);
-            response.end("bad data");
-            return;
-        }
-        const games = parsed_data["games"];
-        if (games == undefined) {
-            log(`incoming game list has no game array..`);
-            response.writeHead(400);
-            response.end("bad data");
-            return;
-        }
-        let processed_data = {
-            games: []
-        };
-        let processed_groups_by_mac = {};
-        let processed_players_by_mac = {};
-        for (const game of games) {
-            const groups = game["groups"];
-            if (groups == undefined) {
-                continue;
-            }
-            let processed_game = {
-                groups: []
-            };
-            processed_data.games.push(processed_game);
-            for (const group of groups) {
-                const players = group["players"];
-                if (players == undefined) {
-                    continue;
-                }
-                let processed_group = {};
-                processed_game.groups.push(processed_group);
-                for (const player of players) {
-                    let processed_player = {
-                        mac_addr: player["mac_addr"].toLowerCase(),
-                        ip_addr: player["ip_addr"],
-                    };
-                    processed_groups_by_mac[processed_player.mac_addr] = processed_group;
-                    processed_players_by_mac[processed_player.mac_addr] = processed_player;
-                    processed_group[processed_player.mac_addr] = processed_player;
-                }
-            }
-        }
-        adhocctl_data = processed_data;
-        adhocctl_groups_by_mac = processed_groups_by_mac;
-        adhocctl_players_by_mac = processed_players_by_mac;
-        send_adhocctl_data_to_workers();
-        response.writeHead(200);
-        response.end("data accepted");
-    });
-}
-function data_debug(request, response) {
-    let response_obj = {
-        adhocctl_data: adhocctl_data,
-        adhocctl_groups_by_mac: adhocctl_groups_by_mac,
-        adhocctl_players_by_mac: adhocctl_players_by_mac,
-    };
-    let convert_session_list = (from_list) => {
-        let to_list = {};
-        for (const [key, sessions] of Object.entries(from_list)) {
-            let response_sessions = [];
-            to_list[key] = response_sessions;
-            for (const session of Object.values(sessions)) {
-                let response_session = {
-                    session_name: session.session_name,
-                    ip: session.ip,
-                    write_buffer_size: session.socket.writableLength,
-                };
-                response_sessions.push(response_session);
-                switch (session.state) {
-                    case SessionMode.SESSION_MODE_PDP:
-                        response_session.pdp_state = session.pdp_state;
-                        break;
-                    case SessionMode.SESSION_MODE_PTP_LISTEN:
-                        break;
-                    case SessionMode.SESSION_MODE_PTP_CONNECT:
-                    case SessionMode.SESSION_MODE_PTP_ACCEPT:
-                        response_session.ptp_state = session.ptp_state;
-                        response_session.dst_addr = session.dst_addr_str;
-                        response_session.dport = session.dport;
-                        break;
-                    default:
-                        log(`bad state ${session.state} on data debug, debug this`);
-                        process.exit(1);
-                }
-            }
-        }
-        return to_list;
-    };
-    response_obj["sessions_by_mac"] = convert_session_list(sessions_by_mac);
-    response_obj["sessions_by_ip"] = convert_session_list(sessions_by_ip);
-    response_obj["memory_usage"] = process.memoryUsage();
-    response.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
-    response.end(JSON.stringify(response_obj));
-}
-const routes = {
-    "/game_list_sync": game_list_sync,
-    "/data_debug": data_debug,
-};
-function session_mode_to_string(mode) {
-    switch (mode) {
-        case SessionMode.SESSION_MODE_INIT:
-            return "init";
-        case SessionMode.SESSION_MODE_PDP:
-            return "pdp";
-        case SessionMode.SESSION_MODE_PTP_LISTEN:
-            return "ptp_listen";
-        case SessionMode.SESSION_MODE_PTP_CONNECT:
-            return "ptp_connect";
-        case SessionMode.SESSION_MODE_PTP_ACCEPT:
-            return "ptp_accept";
-        default:
-            log(`bad mode ${mode} for string conversion, debug this`);
-            process.exit(1);
-    }
-}
-if (worker_threads.isMainThread) {
-    let status_server = http.createServer();
-    status_server.on("error", (err) => {
-        throw err;
-    });
-    status_server.on("request", (request, response) => {
-        let ret = {};
-        const url = request.url == undefined ? "" : request.url;
-        const route = routes[url];
-        if (route != undefined) {
-            route(request, response);
-            return;
-        }
-        for (let entry of Object.entries(sessions)) {
-            let ctx = entry[1];
-            let ret_entry = {
-                state: session_mode_to_string(ctx.state),
-                src_addr: ctx.src_addr_str,
-                sport: ctx.sport
-            };
-            switch (ctx.state) {
-                case SessionMode.SESSION_MODE_PDP:
-                    ret_entry.pdp_state = ctx.pdp_state;
-                    break;
-                case SessionMode.SESSION_MODE_PTP_LISTEN:
-                    break;
-                case SessionMode.SESSION_MODE_PTP_CONNECT:
-                case SessionMode.SESSION_MODE_PTP_ACCEPT:
-                    ret_entry.ptp_state = ctx.ptp_state;
-                    ret_entry.dst_addr = ctx.dst_addr_str;
-                    ret_entry.dport = ctx.dport;
-                    break;
-                default:
-                    log(`bad state ${ctx.state} on status query, debug this`);
-                    process.exit(1);
-            }
-            if (ret[entry[1].src_addr_str] == undefined) {
-                ret[entry[1].src_addr_str] = [];
-            }
-            ret[entry[1].src_addr_str].push(ret_entry);
-        }
-        response.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
-        response.end(JSON.stringify(ret));
-    });
-    log(`begin listening on port ${status_port} for server status`);
-    status_server.listen({
-        port: status_port,
-        backlog: 1000
-    });
-}
