@@ -1,56 +1,77 @@
 "use strict";
 
 /**
- * Generic payload chat censor.
+ * Censors ASCII text in a complete application payload without changing
+ * the payload length. This makes mask mode safe for binary protocols that
+ * carry fixed-size/text fields.
  *
- * This helper intentionally does not assume a game-specific chat packet layout.
- * It censors UTF-8 text in a complete application payload.
- *
- * config:
- *   enabled: boolean
- *   mode: "replace" | "drop"
- *   replacement: string
- *   words: string[]
+ * Matching is deliberately limited to text-like payloads so random binary
+ * game packets are not treated as chat.
  */
+function isTextLike(payload) {
+    if (!Buffer.isBuffer(payload) || payload.length < 4) {
+        return false;
+    }
 
-function normalizeForMatch(text) {
-    return text
-        .normalize("NFKC")
-        .toLowerCase()
-        .replace(/[^\\p{L}\\p{N}]+/gu, "");
-}
+    let textBytes = 0;
+    for (const byte of payload) {
+        if ((byte >= 0x20 && byte <= 0x7e) ||
+            byte === 0x09 || byte === 0x0a || byte === 0x0d) {
+            textBytes++;
+        }
+    }
 
-function isConfigured(censor) {
-    return Boolean(
-        censor &&
-        censor.enabled === true &&
-        Array.isArray(censor.words) &&
-        censor.words.length > 0
-    );
+    return (textBytes / payload.length) >= 0.75;
 }
 
 function escapeRegExp(text) {
     return text.replace(/[.*+?^{}()|[\]\\]/g, "\\$&");
 }
 
-function censorUtf8Payload(payload, censor) {
-    if (!Buffer.isBuffer(payload) || !isConfigured(censor)) {
+function censorPayload(payload, censor) {
+    if (!isTextLike(payload) ||
+        !censor ||
+        censor.enabled !== true ||
+        !Array.isArray(censor.words)) {
         return payload;
     }
 
-    const original = payload.toString("utf8");
-    const normalized = normalizeForMatch(original);
-    const words = censor.words
-        .filter((word) => typeof word === "string" && word.trim().length > 0)
-        .map((word) => normalizeForMatch(word))
-        .filter((word) => word.length > 0);
+    let data = payload.toString("latin1");
+    let changed = false;
+    const replacement = (typeof censor.replacement === "string" &&
+        censor.replacement.length > 0)
+        ? censor.replacement[0]
+        : "*";
 
-    if (words.length === 0) {
-        return payload;
+    for (const configuredWord of censor.words) {
+        if (typeof configuredWord !== "string") {
+            continue;
+        }
+
+        const word = configuredWord.trim();
+        if (word.length === 0) {
+            continue;
+        }
+
+        const expression = new RegExp(
+            "(^|[^A-Za-z0-9])" +
+            escapeRegExp(word) +
+            "([^A-Za-z0-9]|$)",
+            "giu"
+        );
+
+        const next = data.replace(
+            expression,
+            (match) => {
+                changed = true;
+                return replacement.repeat(match.length);
+            }
+        );
+
+        data = next;
     }
 
-    const matched = words.some((word) => normalized.includes(word));
-    if (!matched) {
+    if (!changed) {
         return payload;
     }
 
@@ -58,41 +79,9 @@ function censorUtf8Payload(payload, censor) {
         return null;
     }
 
-    const replacement = typeof censor.replacement === "string"
-        ? censor.replacement
-        : "***";
-
-    let result = original;
-
-    for (const word of censor.words) {
-        if (typeof word !== "string" || word.trim().length === 0) {
-            continue;
-        }
-
-        result = result.replace(
-            new RegExp(escapeRegExp(word), "giu"),
-            replacement
-        );
-
-        const chars = Array.from(word.normalize("NFKC"))
-            .filter((ch) => /[\\p{L}\\p{N}]/u.test(ch));
-
-        if (chars.length > 0) {
-            const obfuscated = chars
-                .map(escapeRegExp)
-                .join("[^\\p{L}\\p{N}]*");
-
-            result = result.replace(
-                new RegExp(obfuscated, "giu"),
-                replacement
-            );
-        }
-    }
-
-    return Buffer.from(result, "utf8");
+    return Buffer.from(data, "latin1");
 }
 
 module.exports = {
-    censorUtf8Payload,
-    isConfigured,
+    censorPayload,
 };
