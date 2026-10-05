@@ -2,11 +2,10 @@
 
 /**
  * Censors ASCII text in a complete application payload without changing
- * the payload length. This makes mask mode safe for binary protocols that
- * carry fixed-size/text fields.
+ * the payload length. Regex patterns are used so obfuscated spellings such
+ * as "f u c k" and "fcuk" can be matched.
  *
- * Matching is deliberately limited to text-like payloads so random binary
- * game packets are not treated as chat.
+ * config.chat_censor.patterns contains JavaScript regex source strings.
  */
 function isTextLike(payload) {
     if (!Buffer.isBuffer(payload) || payload.length < 4) {
@@ -24,15 +23,11 @@ function isTextLike(payload) {
     return (textBytes / payload.length) >= 0.75;
 }
 
-function escapeRegExp(text) {
-    return text.replace(/[.*+?^{}()|[\]\\]/g, "\\$&");
-}
-
 function censorPayload(payload, censor) {
     if (!isTextLike(payload) ||
         !censor ||
         censor.enabled !== true ||
-        !Array.isArray(censor.words)) {
+        !Array.isArray(censor.patterns)) {
         return payload;
     }
 
@@ -43,32 +38,25 @@ function censorPayload(payload, censor) {
         ? censor.replacement[0]
         : "*";
 
-    for (const configuredWord of censor.words) {
-        if (typeof configuredWord !== "string") {
+    for (const source of censor.patterns) {
+        if (typeof source !== "string" || source.length === 0) {
             continue;
         }
 
-        const word = configuredWord.trim();
-        if (word.length === 0) {
+        let expression;
+        try {
+            expression = new RegExp(source, "gi");
+        }
+        catch (error) {
+            console.error(`[chat-censor] Invalid regex: ${source}`, error.message);
             continue;
         }
 
-        const expression = new RegExp(
-            "(^|[^A-Za-z0-9])" +
-            escapeRegExp(word) +
-            "([^A-Za-z0-9]|$)",
-            "giu"
-        );
-
-        const next = data.replace(
-            expression,
-            (match) => {
-                changed = true;
-                return replacement.repeat(match.length);
-            }
-        );
-
-        data = next;
+        data = data.replace(expression, (match) => {
+            changed = true;
+            // Keep the exact byte length so fixed-size/binary framing is safe.
+            return replacement.repeat(match.length);
+        });
     }
 
     if (!changed) {
